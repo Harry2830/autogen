@@ -1,2 +1,4 @@
 autogen
 dotenv
+chromadb
+langchain
