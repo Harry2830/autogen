@@ -1,94 +1,84 @@
 import os
 import autogen
-from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
-from autogen.agentchat.contrib.vectordb.chromadb import ChromaVectorDB
+import asyncio
+from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from chromadb.utils import embedding_functions
-from dotenv import load_dotenv
-from autogen_core.memory import ListMemory, MemoryContent, MemoryMimeType
+from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
+from autogen_agentchat.conditions import TextMentionTermination
+from autogen_agentchat.teams import RoundRobinGroupChat
+from autogen.agentchat.contrib.vectordb.chromadb import ChromaVectorDB
 from autogen_ext.models.openai import OpenAIChatCompletionClient
-import asyncio
+from autogen_agentchat.ui import Console
 
+
+# Load environment variables
 load_dotenv()
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
-user_memory = ListMemory()
-
+# Initialize the OpenAI model client
 model_client = OpenAIChatCompletionClient(
-    model="gpt-3.5-turbo",
+    model="gpt-4o-mini",
     api_key=OPENAI_API_KEY,
-    temperature=0,
+    temperature=0.7,  # Adjust for creativity
 )
 
-
-# llm_config = {
-#     "model": "gpt-3.5-turbo",
-#     "api_key": OPENAI_API_KEY,
-#     "temperature": 0,
-# }
-
-# ✅ Initialize ChromaDB Vector Store
+# Initialize VectorDB (ChromaDB for RAG)
 vector_db = ChromaVectorDB(path="./chroma_db")
-
-
-collection = vector_db.create_collection("rag_collection")
-
-
+collection = vector_db.get_collection("rag_collection")
 embedding_function = embedding_functions.OpenAIEmbeddingFunction(api_key=OPENAI_API_KEY)
 
+# Initialize text splitter for document chunking
 text_splitter = RecursiveCharacterTextSplitter(separators=["\n\n", "\n", "\r", "\t"])
 
-assistant = AssistantAgent(
-    name="Assistant",
-    system_message="You are a helpful AI assistant. Use provided context to answer questions.",
-    model_client=model_client,
-    memory=[user_memory],
-)
-
-user_proxy = UserProxyAgent(
-    name="User",
-    # input_func=input()
-    # code_execution_config={"use_docker": False}  # Use a dictionary here ✅
-)
-
-
-
+# Function to retrieve relevant documents from ChromaDB for RAG
 def retrieve_documents(query, n_results=2):
-    """Retrieve relevant documents for RAG from ChromaDB."""
+    """Retrieve relevant documents from ChromaDB based on the query."""
     results = collection.query(query_texts=[query], n_results=n_results)
-    
-    # Extract documents safely
-    retrieved_docs = results.get("documents", [])  # Get list of docs, default to empty list
+    retrieved_docs = results.get("documents", [])
 
-    # Ensure it's a flat list
-    if retrieved_docs and isinstance(retrieved_docs[0], list):  
-        retrieved_docs = [doc for sublist in retrieved_docs for doc in sublist]  # Flatten nested lists
+    # Flatten nested lists if necessary
+    if retrieved_docs and isinstance(retrieved_docs[0], list):
+        retrieved_docs = [doc for sublist in retrieved_docs for doc in sublist]
     
     return retrieved_docs
 
-# Prepare an initial query that uses retrieved context
-query = "What is zero shot learning capabilities?"
-retrieved_docs = retrieve_documents(query)
-# Since our collection returns strings, simply join them
-context = "\n\n".join(retrieved_docs)
-final_query = f"Using the following retrieved context, answer the question:\n\n{context}\n\nQ: {query}"
+# Create AI Assistant agent
+assistant = AssistantAgent(
+    name="assistant",
+    model_client=model_client,
+    system_message="You are a helpful AI assistant. Use the provided context to answer questions accurately.",
+)
 
-# Create an asynchronous function to run the conversation interactively
+# Create User Proxy agent
+user_proxy = UserProxyAgent("user_proxy", input_func=input)  # Uses console input for queries
+
+# Termination condition (stops when "APPROVE" is mentioned)
+termination = TextMentionTermination("APPROVE")
+
+# Create a Round Robin team chat with the assistant and user
+team = RoundRobinGroupChat([assistant, user_proxy], termination_condition=termination)
+
+# Define the main async function for chat interaction
 async def interactive_chat():
-    # Start the conversation using run_stream() which returns an async generator
-    stream = assistant.run_stream(task=final_query)
-    async for message in stream:
-        print(message)
-    
-    # Now enter a loop to receive human inputs and feed them into the conversation
-    while True:
-        human_input = input("Enter your next query or feedback (type 'exit' to quit): ")
-        if human_input.lower().strip() == "exit":
-            break
-        # Each new human input becomes a new task
-        stream = assistant.run_stream(task=human_input)
-        async for message in stream:
-            print(message)
+    """Runs the interactive chat session asynchronously."""
+    print("\n=== AI Assistant Chat ===")
+    print("Type your message or 'exit' to end the conversation.\n")
 
-# Run the interactive chat loop
-asyncio.run(interactive_chat())
+    while True:
+        user_input = input("You: ").strip()
+        if user_input.lower() == "exit":
+            print("Exiting chat...")
+            break
+
+        retrieved_docs = retrieve_documents(user_input)
+        context = "\n\n".join(retrieved_docs)
+        final_query = f"Using the following retrieved context, answer the question:\n\n{context}\n\nQ: {user_input}"
+
+        # Stream the response
+        stream = team.run_stream(task=final_query)
+        await Console(stream)
+
+# Run the chat asynchronously
+if __name__ == "__main__":
+    asyncio.run(interactive_chat())
