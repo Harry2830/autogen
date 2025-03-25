@@ -4,3 +4,4 @@ venv
 app.py
 file.ipynb
 OAI_CONFIG_LIST.json
+.venv

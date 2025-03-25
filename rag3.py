@@ -3,13 +3,13 @@ import asyncio
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import openai
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_agentchat.conditions import TextMentionTermination
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_agentchat.ui import Console
-from autogen_core.memory import ListMemory, MemoryContent, MemoryMimeType
+from autogen_core.memory import ListMemory
 
 load_dotenv()
 
@@ -33,15 +33,14 @@ text_splitter = RecursiveCharacterTextSplitter(separators=["\n\n", "\n", "\r", "
 
 def expand_query(query):
     """Generate multiple variations of the query to enhance retrieval."""
-    variations = [
+    return [
         f"Give detailed information on {query}",
         f"Explain {query} with examples",
         f"Provide recent research on {query}",
     ]
-    return variations
 
-def retrieve_documents(query, n_results=3):
-    """Retrieve documents from Pinecone using multi-query construction."""
+def retrieve_documents(query: str, n_results: int = 3):
+    """Retrieve documents from Pinecone using multi-query expansion."""
     queries = expand_query(query)
     retrieved_docs = []
     for q in queries:
@@ -57,23 +56,24 @@ def retrieve_documents(query, n_results=3):
         for doc in docs:
             retrieved_docs.append(doc['metadata']['text'])
     
-    # print(f"Queries: {queries}")
-    # print(f"Retrieved Documents: {retrieved_docs}")
-    
-    return list(set(retrieved_docs))[:n_results] 
-
+    return list(set(retrieved_docs))[:n_results]
 
 assistant = AssistantAgent(
     name="assistant",
     model_client=model_client,
-    system_message="You are a RAG-powered AI assistant. Use retrieved documents for accurate answers",
+    system_message=(
+        "You are a RAG-powered AI assistant. "
+        "Use the `retrieve_documents` tool when a query requires external knowledge retrieval. "
+        "After retrieving documents, use them to formulate an informed response."
+    ),
     memory=[user_memory],
+    tools=[retrieve_documents],
 )
 
 confirmation = AssistantAgent(
     name="confirmation",
     model_client=model_client,
-    system_message="You are a AI assistant. after every response from assistant 'APPROVE' the answer.",
+    system_message="You are a validation agent. After every response from the assistant, reply with 'APPROVE'.",
     memory=[user_memory],
 )
 
@@ -81,10 +81,9 @@ user_proxy = UserProxyAgent("user_proxy", input_func=input)
 
 termination = TextMentionTermination("APPROVE")
 
-team = RoundRobinGroupChat([assistant,confirmation], termination_condition=termination)
+team = RoundRobinGroupChat([assistant, confirmation], termination_condition=termination)
 
 async def interactive_chat():
-    
     """Run interactive chat session asynchronously."""
     print("\n=== AI Assistant Chat with Multi-Query RAG ===")
     print("Type your message or 'exit' to end the conversation.\n")
@@ -95,13 +94,8 @@ async def interactive_chat():
             print("Exiting chat...")
             break
 
-        retrieved_docs = retrieve_documents(user_input)
-        context = "\n\n".join(retrieved_docs)
-        final_query = f"Using retrieved context, answer the question:\n\n{context}\n\nQ: {user_input}"
-
-        stream = team.run_stream(task=final_query)  
+        stream = team.run_stream(task=user_input)  
         await Console(stream)
-
 
 if __name__ == "__main__":
     asyncio.run(interactive_chat())
