@@ -3,17 +3,23 @@ from autogen_core import CancellationToken
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
+import os
+from dotenv import load_dotenv
+from mem0 import MemoryClient, Memory
+
+load_dotenv()
+MEM0_API_KEY = os.getenv("MEM0_API_KEY")
+
+client = MemoryClient(api_key=MEM0_API_KEY)
 
 def get_weather(city: str) -> str:
     """Fetch current temperature for a given city."""
-    if city.lower() == "new york":
-        return "75°F"
-    elif city.lower() == "los angeles":
-        return "85°F"
-    elif city.lower() == "london":
-        return "55°F"
-    else:
-        return "Unknown city"
+    weather_data = {
+        "new york": "75°F",
+        "los angeles": "85°F",
+        "london": "55°F"
+    }
+    return weather_data.get(city.lower(), "Unknown city")
 
 def check_weather(temperature: str) -> str:
     """Evaluate if the weather is suitable for an outdoor activity based on temperature."""
@@ -32,7 +38,6 @@ def check_weather(temperature: str) -> str:
 async def main() -> None:
     model_client = OpenAIChatCompletionClient(model="gpt-4o", seed=42, temperature=0)
     
-    # Create the assistant with both tools and reflection enabled.
     agent = AssistantAgent(
         name="assistant",
         model_client=model_client,
@@ -41,7 +46,6 @@ async def main() -> None:
         system_message="You are a helpful assistant. Use the provided functions as needed to answer the question. Reply with TERMINATE when done."
     )
     
-    # Pre-populate conversation history with five messages.
     conversation_history = [
         TextMessage(content="Hi there!", source="user"),
         TextMessage(content="Hello! How can I help you today?", source="assistant"),
@@ -49,27 +53,32 @@ async def main() -> None:
         TextMessage(content="The weather in London is 55°F.", source="assistant"),
         TextMessage(content="Can you check if it's comfortable?", source="user"),
     ]
-    
-    # Optionally display the initial conversation context.
-    # print("Pre-populated conversation context:")
-    # for msg in conversation_history:
-    #     print(f"{msg.source.capitalize()}: {msg.content}")
-    # print("-----")
-    
-    # Interactive loop: each new message is appended and the full conversation is passed.
+
     while True:
         user_input = input("User: ")
         if user_input.strip().lower() == "exit":
             break
         
-        # Add the new user message to the conversation history.
         conversation_history.append(TextMessage(content=user_input, source="user"))
-        
-        # The assistant processes the full conversation history.
+
+        # Fetch relevant memories
+        relevant_memories = client.search(user_input, user_id="haris")
+        print(relevant_memories)
+        memory_context = "\n".join([mem['memory'] for mem in relevant_memories]) if relevant_memories else "No prior memory available."
+
+        # Add memory context to the system message
+        agent.system_message = f"You are a helpful assistant. Use the provided functions as needed. Relevant memory context: {memory_context}"
+
+        # Process conversation
         response = await agent.on_messages(conversation_history, CancellationToken())
-        # Append the assistant's reply to the conversation history.
+        
+        # Append the assistant's reply
         conversation_history.append(response.chat_message)
         
         print("Assistant:", response.chat_message.content)
+
+    # Store the conversation in memory
+    msgs = [{"role": msg.source, "content": msg.content} for msg in conversation_history]
+    client.add(msgs, user_id="haris")
 
 asyncio.run(main())
